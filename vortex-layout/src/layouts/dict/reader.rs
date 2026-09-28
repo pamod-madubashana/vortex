@@ -26,7 +26,10 @@ use vortex_array::expr::direct_bound_annotations;
 use vortex_array::expr::label_bound_tree;
 use vortex_array::expr::root;
 use vortex_array::expr::transform::partition_bound_annotations;
+use vortex_array::expr::traversal::TraversalOrder;
+use vortex_array::expr::traversal::pre_order_visit_down;
 use vortex_array::optimizer::ArrayOptimizer;
+use vortex_array::scalar_fn::fns::list_contains::ListContains;
 use vortex_array::scalar_fn::is_negative_cost;
 use vortex_error::VortexError;
 use vortex_error::VortexExpect;
@@ -177,6 +180,21 @@ impl DictReader {
 // "outer" expects this name as input.
 const PUSHDOWN_ANNOTATION: &str = "";
 
+/// Returns whether the expression references the scope root anywhere in its tree.
+fn references_root(expr: &BoundExpression) -> bool {
+    let mut found = false;
+    pre_order_visit_down(expr, |node| {
+        if node.is_root() {
+            found = true;
+            Ok(TraversalOrder::Stop)
+        } else {
+            Ok(TraversalOrder::Continue)
+        }
+    })
+    .vortex_expect("bound expression traversal cannot fail");
+    found
+}
+
 /// Split expression into two parts:
 ///
 /// left is the outer part that we want to apply to array after canonicalizing.
@@ -242,13 +260,40 @@ impl LayoutReader for DictReader {
     fn pruning_evaluation(
         &self,
         _row_range: &Range<u64>,
-        _expr: &BoundExpression,
+        expr: &BoundExpression,
         mask: Mask,
     ) -> VortexResult<MaskFuture> {
         // NOTE: we can get the values here, convert expression to the codes domain, and push down
         // to the codes child. We don't do that here because:
         // - Reading values only for an approx filter is expensive
         // - In practice, all stats based pruning evaluation should be already done upstream of this dict reader
+        //
+        // Exception: `list_contains(root, needle)` with a needle that does not reference the
+        // root can be evaluated against the (small) dictionary values. If none of the values
+        // contain the needle, every row is false and we can prune the whole range without
+        // fetching the codes child at all.
+        if expr.is::<ListContains>()
+            && expr.children().len() == 2
+            && expr.child(0).is_root()
+            && !references_root(expr.child(1))
+        {
+            let len = mask.len();
+            if mask.all_false() {
+                return Ok(MaskFuture::ready(mask));
+            }
+            let values_eval = self.values_eval(expr.clone());
+            let session = self.session.clone();
+            return Ok(MaskFuture::new(len, async move {
+                let values_result = values_eval.await.map_err(VortexError::from)?;
+                let mut ctx = session.create_execution_ctx();
+                let values_mask = values_result.null_as_false().execute(&mut ctx)?;
+                if values_mask.all_false() {
+                    Ok(Mask::new_false(len))
+                } else {
+                    Ok(mask)
+                }
+            }));
+        }
         Ok(MaskFuture::ready(mask))
     }
 

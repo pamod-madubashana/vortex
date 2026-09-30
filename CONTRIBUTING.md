@@ -38,15 +38,28 @@ The contribution process is outlined below:
 
 ### Build prerequisites
 
-Bindings for the `.fbs` and `.proto` schemas are generated at build time into `OUT_DIR` by the
-`build.rs` of the crate that owns each schema, and are never checked in.
+Bindings for the `.proto` schemas are checked in under `<crate>/src/proto/generated/`. After
+changing a schema, regenerate them with:
 
-FlatBuffers generation shells out to the [`flatc`](https://github.com/google/flatbuffers/releases)
-compiler, so building any Vortex crate requires it on `PATH`, or its location in the `FLATC`
-environment variable. CI pins version `25.12.19`; other recent versions work, but may produce
-cosmetically different generated code.
+```bash
+cargo run -p xtask -- generate-proto
+```
 
-Protocol Buffers generation parses schemas in pure Rust, so `protoc` is not required.
+Generation parses schemas in pure Rust, so `protoc` is not required, and its output is pinned by
+`Cargo.lock`.
+
+Bindings for the `.fbs` schemas are checked in under `<crate>/src/flatbuffers/generated/`, so
+building needs no FlatBuffers tooling. After changing a schema, regenerate them with:
+
+```bash
+cargo run -p xtask -- generate-flatbuffers
+```
+
+This shells out to the [`flatc`](https://github.com/google/flatbuffers/releases) compiler on
+`PATH`, or at the location in the `FLATC` environment variable, and refuses any version other
+than the one pinned in `xtask/src/generate_flatbuffers.rs`, since generated code is not
+source-compatible across `flatc` releases. CI regenerates both sets of bindings and fails if the
+checked-in copies differ.
 
 The repository uses [`uv`](https://docs.astral.sh/uv/) to manage its Python workspace. From the
 repository root, create or update the development environment with:

@@ -9,6 +9,12 @@ pub use array::FoRSlots;
 
 pub(crate) mod compute;
 
+#[cfg(test)]
+mod tests;
+
+mod plugin;
+pub use plugin::FoRPlugin;
+
 mod vtable;
 pub use vtable::FoR;
 pub use vtable::FoRArray;
